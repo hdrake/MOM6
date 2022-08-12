@@ -587,8 +587,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
   endif
 
   if (CS%use_otec) then
-    !print *, "Using OTEC"
-    call otec_step(h, tv, dt, G, GV, US, CS%otec, halo=CS%halo_TS_diff)
+    call otec_step(h, tv, dt, G, GV, CS%otec, halo=CS%halo_TS_diff)
   endif
 
   ! Whenever thickness changes let the diag manager know, target grids
@@ -3417,7 +3416,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     call geothermal_init(Time, G, GV, US, param_file, diag, CS%geothermal, useALEalgorithm)
 
   ! initialize the OTEC module
-  call otec_init(Time, G, GV, US, param_file, diag, CS%otec)
+  call otec_init(Time, G, GV, param_file, diag, CS%otec)
   CS%use_otec = .true.
 
   ! initialize module for internal tide induced mixing
