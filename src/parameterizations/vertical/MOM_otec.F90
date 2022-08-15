@@ -93,12 +93,12 @@ subroutine otec_step(h, tv, dt, G, GV, CS, halo)
         v1d%S(k) = tv%S(i,j,k)
       enddo
 
-      ! Only continue if temperature difference is larger than 16ºC (net power production)
+      ! Only continue if temperature difference is larger than 20ºC (net power production)
       call find_layer(v1d%h, GV, CS%depth_warm, k_warm, layer_depth)
       call find_layer(v1d%h, GV, CS%depth_cold, k_cold, layer_depth)
       deltaT = T1d(k_warm) - T1d(k_cold)
 
-      if (deltaT > 16.0) then
+      if (deltaT > 20.0) then
 
         call pipe_flow(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
         call pipe_flow(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
