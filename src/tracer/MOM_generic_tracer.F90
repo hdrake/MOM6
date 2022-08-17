@@ -541,7 +541,7 @@ contains
       enddo
     endif
 
-    ! This applies OTEC piping to tracers
+    ! This applies OTEC piping to generic tracers
     if (otec%apply_otec) then
       g_tracer=>CS%g_tracer_list
       do
