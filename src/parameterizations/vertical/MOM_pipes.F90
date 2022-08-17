@@ -20,7 +20,7 @@ implicit none ; private
 
 #include <MOM_memory.h>
 
-public pipe_flow, find_layer
+public pipe_mass_and_tracer, find_layer
 
 !> Control structure that stores temperature and salinity as 1-dimensional arrays
 !! for a single grid cell.
@@ -28,7 +28,7 @@ type, public :: var1d_type ;
   ! If allocated, the following variables have nz layers.
   real, pointer :: h(:) => Null() !< Layer thickness [m].
   real, pointer :: T(:) => NULL() !< Potential temperature [degC].
-  real, pointer :: S(:) => NULL() !< Salinity [PSU] or [gSalt/kg], generically [ppt].
+  real, pointer :: Tr(:) => NULL() !< Salinity [PSU] or [gSalt/kg], generically [ppt], or generic Tracer [conc].
 end type var1d_type
 
 contains
@@ -56,19 +56,20 @@ end subroutine find_layer
 !> Drains the layer at a cell, starting at a minimum depth of z.
 !! If this depletes the layer fully, then uses layer k+1 to finish draining.
 !! Upon depleting the deepest layer, stops with a warning in stdout.
-subroutine mass_and_TS_sink(v1d, GV, sink_depth, dThickness, &
-                                    netMassOut, netSaltOut, netHeatOut)
+subroutine mass_and_tracer_sink(v1d, GV, sink_depth, dThickness, &
+                                    netMassOut, netHeatOut, netTracerOut)
   type(var1d_type),       intent(inout)    :: v1d !< 1-dimensional copies of h, T, and S
   type(verticalGrid_type),   intent(in)    :: GV !< The ocean's vertical grid structure.
 
   ! Mass Sink Parameters
-  real,                      intent(in)    :: sink_depth !< The depth of this mass sink [H ~> m or kg m-2].
-  real,                      intent(in)    :: dThickness !< Amount to change layer thickness [H ~> m or kg m-2]
-                                                         !! Must be negative.
-  real,                      intent(inout) :: netMassOut !< The total mass being extracted [H ~> m or kg m-2].
-  real,                      intent(inout) :: netSaltOut !< The total amount of salt being extracted
-                                                         !! [ppt H ~> ppt m or ppt kg m-2].
-  real,                      intent(inout) :: netHeatOut !< The total heat being extracted [degC H ~> degC m or degC kg m-2].
+  real,                      intent(in)    :: sink_depth   !< The depth of this mass sink [H ~> m or kg m-2].
+  real,                      intent(in)    :: dThickness   !< Amount to change layer thickness [H ~> m or kg m-2]
+                                                           !! Must be negative.
+  real,                      intent(inout) :: netMassOut   !< The total mass being extracted [H ~> m or kg m-2].
+  real,                      intent(inout) :: netHeatOut   !< The total heat being extracted [degC H ~> degC m or degC kg m-2].
+  real,                      intent(inout) :: netTracerOut !< The total amount of salt being extracted
+                                                           !! [ppt H ~> ppt m or ppt kg m-2].
+
 
   ! Local variables
   integer :: k
@@ -95,8 +96,8 @@ subroutine mass_and_TS_sink(v1d, GV, sink_depth, dThickness, &
 
     ! Update tracers for output
     netMassOut = netMassOut - dh
-    netSaltOut = netSaltOut - dh*v1d%S(k)
     netHeatOut = netHeatOut - dh*v1d%T(k)
+    netTracerOut = netTracerOut - dh*v1d%Tr(k)
 
     ! Increment for the next iteration
     k = k + 1
@@ -108,20 +109,20 @@ subroutine mass_and_TS_sink(v1d, GV, sink_depth, dThickness, &
     layer_depth = layer_depth + v1d%h(k)
   enddo
 
-end subroutine mass_and_TS_sink
+end subroutine mass_and_tracer_sink
 
-subroutine mass_and_TS_source(v1d, GV, source_depth, netMassIn, netSaltIn, netHeatIn)
+subroutine mass_and_tracer_source(v1d, GV, source_depth, netMassIn, netHeatIn, netTracerIn)
   type(var1d_type),       intent(inout)    :: v1d !< A structure containing pointers
   type(verticalGrid_type),   intent(in)    :: GV !< The ocean's vertical grid structure.
                                                    !! to any available thermodynamic fields.
   ! Source variables
   real,                      intent(in)    :: source_depth !< The depth of this mass sink [H ~> m or kg m-2].
 
-  real, optional,            intent(in)    :: netMassIn !< The total mass being added per unit area [H ~> m or kg m-2].
-  real, optional,            intent(in)    :: netSaltIn !< The total amount of salt being added with the water
-                                                        !! [ppt H ~> ppt m or ppt kg m-2].
-  real, optional,            intent(in)    :: netHeatIn !< The total heat content of the water being added
-                                                        !! [degC H ~> degC m or degC kg m-2].
+  real, optional,            intent(in)    :: netMassIn    !< The total mass being added per unit area [H ~> m or kg m-2].
+  real, optional,            intent(in)    :: netHeatIn    !< The total heat content of the water being added
+                                                           !! [degC H ~> degC m or degC kg m-2].
+  real, optional,            intent(in)    :: netTracerIn  !< The total amount of salt being added with the water
+                                                           !! [ppt H ~> ppt m or ppt kg m-2].
 
   ! Local variables
   integer :: k
@@ -141,36 +142,14 @@ subroutine mass_and_TS_source(v1d, GV, source_depth, netMassIn, netSaltIn, netHe
   v1d%h(k) = v1d%h(k) + netMassIn
   iNewMass = 1./(v1d%h(k))
 
-  v1d%S(k) = (oldMass*v1d%S(k) + netSaltIn) * iNewMass
   v1d%T(k) = (oldMass*v1d%T(k) + netHeatIn) * iNewMass
+  v1d%Tr(k) = (oldMass*v1d%Tr(k) + netTracerIn) * iNewMass
 
-end subroutine mass_and_TS_source
-
-subroutine tracer_source(Tr1d, GV, k_source, oldMass, NewMass, netTracerIn)
-  type(var1d_type),       intent(inout)    :: v1d !< A structure containing pointers
-  type(verticalGrid_type),   intent(in)    :: GV !< The ocean's vertical grid structure.
-                                                   !! to any available thermodynamic fields.
-  ! Source variables
-  real,                      intent(in)    :: source_depth !< The depth of this mass sink [H ~> m or kg m-2].
-
-  real, optional,            intent(in)    :: netMassIn !< The total mass being added per unit area [H ~> m or kg m-2].
-  real, optional,            intent(in)    :: netSaltIn !< The total amount of salt being added with the water
-                                                        !! [ppt H ~> ppt m or ppt kg m-2].
-  real, optional,            intent(in)    :: netHeatIn !< The total heat content of the water being added
-                                                        !! [degC H ~> degC m or degC kg m-2].
-
-  ! Local variables
-  integer :: k
-  real :: layer_depth, &
-          oldMass, iNewMass ! Inverse of total mass before/after injection [m2 kg-1].
-
-  Tr(k) = (oldMass*v1d%S(k) + netTracerIn) * iNewMass
-
-end subroutine tracer_source
+end subroutine mass_and_tracer_source
 
 !> Non-local vertical transport seawater volume and tracers from point sink to point source.
-subroutine pipe_flow(i, j, sink_depth, source_depth, pipe_velocity, dt, G, GV, v1d)
-  type(var1d_type),                          intent(inout) :: v1d!< 1D column of state variables
+subroutine pipe_mass_and_tracer(i, j, sink_depth, source_depth, pipe_velocity, dt, G, GV, v1d)
+  type(var1d_type),                          intent(inout) :: v1d!< 1D column of prognostic variables
   type(ocean_grid_type),                     intent(in)    :: G  !< The ocean's grid structure.
   type(verticalGrid_type),                   intent(in)    :: GV !< The ocean's vertical grid structure.
   integer,                                   intent(in)    :: i  !< Time increment [T ~> s].
@@ -182,7 +161,7 @@ subroutine pipe_flow(i, j, sink_depth, source_depth, pipe_velocity, dt, G, GV, v
 
   ! Local variables
   real :: dh, & ! pipe_velocity integrated over the timestep dt
-          dMass, dSalt, dHeat, & ! Tracers being mixed and moved
+          dMass, dHeat, dTracer, & ! Tracers being mixed and moved
           depth_tot ! To make sure ocean is deep enough to fit the pipes
 
   ! Skip profile if ocean depth is deeper than cold intake
@@ -193,12 +172,12 @@ subroutine pipe_flow(i, j, sink_depth, source_depth, pipe_velocity, dt, G, GV, v
   
   ! Prepare tracers to be moved between layers
   ! dMass is just a shorthand--we actually are conserving volume
-  dMass = 0.0; dSalt = 0.0; dHeat = 0.0
+  dMass = 0.0; dHeat = 0.0; dTracer = 0.0
   dh = -pipe_velocity * dt
  
-  call mass_and_TS_sink(v1d, GV, sink_depth, dh, dMass, dSalt, dHeat)
-  call mass_and_TS_source(v1d, GV, source_depth, dMass, dSalt, dHeat)
+  call mass_and_tracer_sink(v1d, GV, sink_depth, dh, dMass, dHeat, dTracer)
+  call mass_and_tracer_source(v1d, GV, source_depth, dMass, dHeat, dTracer)
 
-end subroutine pipe_flow
+end subroutine pipe_mass_and_tracer
 
 end module MOM_pipes

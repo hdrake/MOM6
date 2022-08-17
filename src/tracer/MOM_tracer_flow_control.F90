@@ -8,6 +8,7 @@ use MOM_diag_mediator, only : time_type, diag_ctrl
 use MOM_error_handler, only : MOM_error, FATAL, WARNING
 use MOM_file_parser,   only : get_param, log_version, param_file_type, close_param_file
 use MOM_forcing_type,  only : forcing, optics_type
+use MOM_otec,          only : otec_CS
 use MOM_get_input,     only : Get_MOM_input
 use MOM_grid,          only : ocean_grid_type
 use MOM_hor_index,     only : hor_index_type
@@ -403,7 +404,7 @@ subroutine call_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, G
 end subroutine call_tracer_set_forcing
 
 !> This subroutine calls all registered tracer column physics subroutines.
-subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, tv, optics, CS, &
+subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, tv, optics, otec, CS, &
                                   debug, KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
   type(ocean_grid_type),                 intent(in) :: G      !< The ocean's grid structure.
   type(verticalGrid_type),               intent(in) :: GV     !< The ocean's vertical grid structure.
@@ -428,6 +429,7 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
                                                               !! thermodynamic variables.
   type(optics_type),                     pointer    :: optics !< The structure containing optical
                                                               !! properties.
+  type(otec_CS),                         intent(in) :: otec   
   type(tracer_flow_control_CS),          pointer    :: CS     !< The control structure returned by
                                                               !! a previous call to
                                                               !! call_tracer_register.
@@ -502,7 +504,7 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
             "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
             "[QRZT]_RESCALE_POWER parameters to 0.")
       call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, &
-                                             G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics, &
+                                             G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics, otec, &
                                              evap_CFL_limit=evap_CFL_limit, &
                                              minimum_forcing_depth=minimum_forcing_depth)
     endif
@@ -567,7 +569,7 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
             "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
             "[QRZT]_RESCALE_POWER parameters to 0.")
       call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, &
-                                     G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics)
+                                     G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics, otec)
     endif
     if (CS%use_pseudo_salt_tracer) &
       call pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &

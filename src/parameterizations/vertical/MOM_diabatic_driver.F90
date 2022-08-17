@@ -1041,7 +1041,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
 
   ! For passive tracers, the changes in thickness due to boundary fluxes has yet to be applied
   call call_tracer_column_fns(h_orig, h, ent_s(:,:,1:nz), ent_s(:,:,2:nz+1), fluxes, Hml, dt, &
-                              G, GV, US, tv, CS%optics, CS%tracer_flow_CSp, CS%debug, &
+                              G, GV, US, tv, CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug, &
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=CS%KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
@@ -1550,7 +1550,7 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
 
   ! For passive tracers, the changes in thickness due to boundary fluxes has yet to be applied
   call call_tracer_column_fns(h_orig, h, ent_s(:,:,1:nz), ent_s(:,:,2:nz+1), fluxes, Hml, dt, &
-                              G, GV, US, tv, CS%optics, CS%tracer_flow_CSp, CS%debug, &
+                              G, GV, US, tv, CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug, &
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=CS%KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
@@ -1730,9 +1730,6 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
     if (showCallTree) call callTree_waypoint("geothermal (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
   endif
-
-  ! OTEC !
-  ! if (CS%use_otec) call otec_intake(h, tv, dt, G, GV, US, CS%otec, halo=CS%halo_TS_diff)
 
   ! Whenever thickness changes let the diag manager know, target grids
   ! for vertical remapping may need to be regenerated.
@@ -2319,7 +2316,7 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
     enddo
 
     call call_tracer_column_fns(hold, h, eatr, ebtr, fluxes, Hml, dt, G, GV, US, tv, &
-                              CS%optics, CS%tracer_flow_CSp, CS%debug, &
+                              CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug, &
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=CS%KPP_NLTscalar)
 
@@ -2342,13 +2339,13 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
     enddo ; enddo ; enddo
 
     call call_tracer_column_fns(hold, h, eatr, ebtr, fluxes, Hml, dt, G, GV, US, tv, &
-                                CS%optics, CS%tracer_flow_CSp, CS%debug, &
+                                CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug, &
                                 KPP_CSp=CS%KPP_CSp, &
                                 nonLocalTrans=CS%KPP_NLTscalar)
 
   else
     call call_tracer_column_fns(hold, h, ea, eb, fluxes, Hml, dt, G, GV, US, tv, &
-                                CS%optics, CS%tracer_flow_CSp, CS%debug, &
+                                CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug, &
                                 KPP_CSp=CS%KPP_CSp, &
                                 nonLocalTrans=CS%KPP_NLTscalar)
 
@@ -2607,7 +2604,7 @@ subroutine adiabatic(h, tv, fluxes, dt, G, GV, US, CS)
   zeros(:,:,:) = 0.0
 
   call call_tracer_column_fns(h, h, zeros, zeros, fluxes, zeros(:,:,1), dt, G, GV, US, tv, &
-                              CS%optics, CS%tracer_flow_CSp, CS%debug)
+                              CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug)
 
 end subroutine adiabatic
 
@@ -3441,7 +3438,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   ! initialize the OTEC module
   call otec_init(Time, G, GV, param_file, diag, CS%otec)
-  CS%use_otec = .true.
+  CS%use_otec = CS%otec%apply_otec
 
   ! initialize module for internal tide induced mixing
   if (CS%use_int_tides) then

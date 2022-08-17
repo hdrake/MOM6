@@ -27,6 +27,7 @@ use MOM_offline_aux,          only : update_h_horizontal_flux, update_h_vertical
 use MOM_offline_aux,          only : distribute_residual_uh_barotropic, distribute_residual_vh_barotropic
 use MOM_offline_aux,          only : distribute_residual_uh_upwards, distribute_residual_vh_upwards
 use MOM_opacity,              only : opacity_CS, optics_type
+use MOM_otec,                 only : otec_CS
 use MOM_open_boundary,        only : ocean_OBC_type
 use MOM_time_manager,         only : time_type, real_to_time
 use MOM_tracer_advect,        only : tracer_advect_CS, advect_tracer
@@ -65,6 +66,7 @@ type, public :: offline_transport_CS ; private
           !< A structure pointing to various thermodynamic variables
   type(optics_type),             pointer :: optics          => NULL()
           !< Pointer to the optical properties type
+  type(otec_CS),                 pointer :: otec            => NULL() 
   type(diabatic_aux_CS),         pointer :: diabatic_aux_CSp => NULL()
           !< Pointer to the diabatic_aux control structure
 
@@ -715,7 +717,7 @@ subroutine offline_diabatic_ale(fluxes, Time_start, Time_end, G, GV, US, CS, h_p
   ! Note that tracerBoundaryFluxesInOut within this subroutine should NOT be called
   ! as the freshwater fluxes have already been accounted for
   call call_tracer_column_fns(h_pre, h_pre, eatr, ebtr, fluxes, CS%MLD, CS%dt_offline_vertical, &
-                              G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+                              G, GV, US, CS%tv, CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug)
 
   if (CS%diurnal_SW .and. CS%read_sw) then
     fluxes%sw(:,:) = sw(:,:)
@@ -898,7 +900,7 @@ subroutine offline_advection_layer(fluxes, Time_start, time_interval, G, GV, US,
       ! First do vertical advection
       call update_h_vertical_flux(G, GV, eatr_sub, ebtr_sub, h_pre, h_new)
       call call_tracer_column_fns(h_pre, h_new, eatr_sub, ebtr_sub, &
-          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug)
       ! We are now done with the vertical mass transports, so now h_new is h_sub
       do k=1,nz ; do j=js-1,je+1 ; do i=is-1,ie+1
         h_pre(i,j,k) = h_new(i,j,k)
@@ -938,7 +940,7 @@ subroutine offline_advection_layer(fluxes, Time_start, time_interval, G, GV, US,
       ! Second vertical advection
       call update_h_vertical_flux(G, GV, eatr_sub, ebtr_sub, h_pre, h_new)
       call call_tracer_column_fns(h_pre, h_new, eatr_sub, ebtr_sub, &
-          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%otec, CS%tracer_flow_CSp, CS%debug)
       ! We are now done with the vertical mass transports, so now h_new is h_sub
       do k=1,nz ; do i=is-1,ie+1 ; do j=js-1,je+1
         h_pre(i,j,k) = h_new(i,j,k)

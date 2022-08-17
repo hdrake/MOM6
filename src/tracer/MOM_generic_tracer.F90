@@ -35,6 +35,7 @@ module MOM_generic_tracer
   use MOM_error_handler, only : MOM_error, FATAL, WARNING, NOTE, is_root_pe
   use MOM_file_parser, only : get_param, log_param, log_version, param_file_type
   use MOM_forcing_type, only : forcing, optics_type
+  use MOM_otec, only : otec_CS, otec_tracer
   use MOM_grid, only : ocean_grid_type
   use MOM_hor_index, only : hor_index_type
   use MOM_io, only : file_exists, MOM_read_data, slasher
@@ -392,7 +393,7 @@ contains
   !! tracer physics or chemistry to the tracers from this file.
   !! CFCs are relatively simple, as they are passive tracers. with only a surface
   !! flux as a source.
-  subroutine MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, CS, tv, optics, &
+  subroutine MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, CS, tv, optics, otec, &
         evap_CFL_limit, minimum_forcing_depth)
     type(ocean_grid_type),   intent(in) :: G     !< The ocean's grid structure
     type(verticalGrid_type), intent(in) :: GV    !< The ocean's vertical grid structure
@@ -414,6 +415,7 @@ contains
     type(MOM_generic_tracer_CS), pointer :: CS   !< Pointer to the control structure for this module.
     type(thermo_var_ptrs),   intent(in) :: tv    !< A structure pointing to various thermodynamic variables
     type(optics_type),       intent(in) :: optics !< The structure containing optical properties.
+    type(otec_CS),           intent(in) :: otec  
     real,          optional, intent(in) :: evap_CFL_limit !< Limits how much water can be fluxed out of
                                                  !! the top layer Stored previously in diabatic CS.
     real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which fluxes
@@ -530,6 +532,24 @@ contains
           enddo ; enddo ; enddo
           call applyTracerBoundaryFluxesInOut(G, GV, g_tracer%field(:,:,:,1), dt, &
                             fluxes, h_work, evap_CFL_limit, minimum_forcing_depth)
+        endif
+
+         !traverse the linked list till hit NULL
+         call g_tracer_get_next(g_tracer, g_tracer_next)
+        if (.NOT. associated(g_tracer_next)) exit
+        g_tracer=>g_tracer_next
+      enddo
+    endif
+
+    ! This applies OTEC piping to tracers
+    if (otec%apply_otec) then
+      g_tracer=>CS%g_tracer_list
+      do
+        if (g_tracer_is_prog(g_tracer)) then
+          do k=1,nk ;do j=jsc,jec ; do i=isc,iec
+            h_work(i,j,k) = h_old(i,j,k)
+          enddo ; enddo ; enddo
+          call otec_tracer(h_work, tv%T, g_tracer%field(:,:,:,1), dt, G, GV, otec)
         endif
 
          !traverse the linked list till hit NULL

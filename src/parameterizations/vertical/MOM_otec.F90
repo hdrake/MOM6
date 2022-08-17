@@ -15,7 +15,7 @@ use MOM_variables,     only : thermo_var_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type, get_thickness_units
 use MOM_EOS,           only : calculate_density, calculate_density_derivs
 use MOM_EOS,           only : EOS_type
-use MOM_pipes,         only : pipe_flow, find_layer, var1d_type
+use MOM_pipes,         only : pipe_mass_and_tracer, find_layer, var1d_type
 
 implicit none ; private
 
@@ -24,14 +24,9 @@ implicit none ; private
 public otec_diabatic, otec_tracer, otec_init
 
 !> Control structure for OTEC
-type, public :: otec_CS ; private
+type, public :: otec_CS ;
   logical :: initialized = .false. !< True if this control structure has been initialized.
   logical :: apply_otec !< If true, OTEC will be applied.
-  
-  ! Two-dimensional helper arrays
-  integer, allocatable, dimension(:,:) :: k_source
-  real, allocatable, dimension(:,:) :: netTracerInCold, oldMassCold, iNewMassCold
-  real, allocatable, dimension(:,:) :: netTracerInWarm, oldMassWarm, iNewMassWarm
 
   ! OTEC input variables
   real    :: w_cw !< Cold-water pipe velocity [Z T-1 ~> m s-1]
@@ -76,7 +71,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
 
   v1d%h => h1d
   v1d%T => T1d
-  v1d%S => S1d
+  v1d%Tr => S1d
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   if (present(halo)) then
@@ -95,7 +90,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
       do k=1,GV%ke
         v1d%h(k) = h(i,j,k)
         v1d%T(k) = tv%T(i,j,k)
-        v1d%S(k) = tv%S(i,j,k)
+        v1d%Tr(k) = tv%S(i,j,k)
       enddo
 
       ! Only continue if temperature difference is larger than 20ºC (net power production)
@@ -103,13 +98,10 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
       call find_layer(v1d%h, GV, CS%depth_cold, k_cold, layer_depth)
       deltaT = T1d(k_warm) - T1d(k_cold)
 
-      call find_layer(v1d%h, GV, CS%depth_out, k_out, layer_depth)
-      CS%k_source(i,j) = k_out
-
       if (deltaT > 20.0) then
 
-        call pipe_flow(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
-        call pipe_flow(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
+        call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
+        call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
 
         ! Copy the 1D working arrays back into the original 3D arrays
         do k=1,GV%ke
@@ -125,10 +117,11 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
 
 end subroutine otec_diabatic
 
-subroutine otec_tracer(h, Tr, dt, G, GV, CS, halo)
+subroutine otec_tracer(h, T, Tr, dt, G, GV, CS, halo)
   type(ocean_grid_type),                     intent(in)    :: G  !< The ocean's grid structure.
   type(verticalGrid_type),                   intent(in)    :: GV !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h  !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: T  !< Temperature [degree C]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: Tr !< Tracer concentration on T-cell [conc]
   real,                                      intent(in)    :: dt !< Time increment [T ~> s].
   type(otec_CS),                             intent(in)    :: CS !< The OTEC control structure
@@ -136,9 +129,7 @@ subroutine otec_tracer(h, Tr, dt, G, GV, CS, halo)
 
   ! Local variables
   integer :: i, j, k, is, ie, js, je, nz, k2, k_warm, k_cold
-  real :: dh_cold, dh_warm, & ! w_cw and w_ww applied over the timestep
-          dMass, dSalt, dHeat, & ! Tracers being mixed and moved
-          layer_depth, depth_tot, deltaT ! For comparing stratification against threshold
+  real :: layer_depth, depth_tot, deltaT ! For comparing stratification against threshold
   real, dimension(SZK_(GV)), target :: h1d, T1d, Tr1d
   type(var1d_type) :: v1d !< 1-dimensional copy of state variables
 
@@ -149,13 +140,14 @@ subroutine otec_tracer(h, Tr, dt, G, GV, CS, halo)
   depth_tot = 0.0
 
   v1d%h => h1d
-  v1d%Tr => Tr1d
   v1d%T => T1d
+  v1d%Tr => Tr1d
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
-  if (present(halo)) then
-    is = G%isc-halo ; ie = G%iec+halo ; js = G%jsc-halo ; je = G%jec+halo
-  endif
+  ! Assume no halo for generic tracers? (Is that correct to do?)
+  !if (present(halo)) then
+  !  is = G%isc-halo ; ie = G%iec+halo ; js = G%jsc-halo ; je = G%jec+halo
+  !endif
 
   if (.not. CS%initialized) call MOM_error(FATAL, "MOM_otec: "//&
          "Module must be initialized before it is used.")
@@ -167,7 +159,9 @@ subroutine otec_tracer(h, Tr, dt, G, GV, CS, halo)
 
       ! Copy this column into a 1D array (for runtime efficiency)
       do k=1,GV%ke
-
+        v1d%h(k) = h(i,j,k)
+        v1d%T(k) = T(i,j,k)
+        v1d%Tr(k) = Tr(i,j,k)
       enddo
 
       ! Only continue if temperature difference is larger than 20ºC (net power production)
@@ -177,32 +171,17 @@ subroutine otec_tracer(h, Tr, dt, G, GV, CS, halo)
 
       if (deltaT > 20.0) then
 
-        ! Skip profile if ocean depth is deeper than either intake
-        depth_tot = G%bathyT(i,j) + G%Z_ref
-        if (depth_tot < max(sink_depth, source_depth)) then
-          return
-        endif
-  
-        ! Prepare tracers to be moved between layers
-        ! dMass is just a shorthand--we actually are conserving volume
-        dMass = 0.0; dSalt = 0.0; dHeat = 0.0
-        dh = -pipe_velocity * dt
-        call mass_and_TS_sink(v1d, GV, sink_depth, dh, dMass, dSalt, dHeat)
-        call mass_and_TS_source(v1d, GV, source_depth, dMass, dSalt, dHeat)
-        CS
+        call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
+        call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
 
         ! Copy the 1D working arrays back into the original 3D arrays
         do k=1,GV%ke
-          h(i,j,k) = h1d(k)
-          tv%T(i,j,k) = T1d(k)
-          tv%S(i,j,k) = S1d(k)
+          Tr(i,j,k) = v1d%Tr(k)
         enddo
 
       endif
-
     enddo ! i-loop
   enddo ! j-loop
-
 end subroutine otec_tracer
 
 !> Initialize parameters and allocate memory associated with the OTEC module.
@@ -230,14 +209,6 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
   CS%initialized = .true.
   CS%diag => diag
   CS%Time => Time
-
-  call safe_alloc_alloc(CS%k_source, isd, ied, jsd, jed); CS%k_source(:,:) = 0
-  call safe_alloc_alloc(CS%netTracerInCold, isd, ied, jsd, jed); CS%netTracerInCold(:,:) = 0.0
-  call safe_alloc_alloc(CS%oldMassCold, isd, ied, jsd, jed); CS%oldMassCold(:,:) = 0.0
-  call safe_alloc_alloc(CS%iNewMassCold,isd, ied, jsd, jed); CS%iNewMassCold(:,:) = 0.0
-  call safe_alloc_alloc(CS%netTracerInWarm, isd, ied, jsd, jed); CS%netTracerInWarm(:,:) = 0.0
-  call safe_alloc_alloc(CS%oldMassWarm, isd, ied, jsd, jed); CS%oldMassWarm(:,:) = 0.0
-  call safe_alloc_alloc(CS%iNewMassWarm,isd, ied, jsd, jed); CS%iNewMassWarm(:,:) = 0.0
 
   ! write parameters to the model log.
   call log_version(param_file, mdl, version, "")
