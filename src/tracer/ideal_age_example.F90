@@ -277,8 +277,8 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
 end subroutine initialize_ideal_age_tracer
 
 !> Applies diapycnal diffusion, aging and regeneration at the surface to the ideal age tracers
-subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, otec, &
-              evap_CFL_limit, minimum_forcing_depth)
+subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, tv, &
+                otec, evap_CFL_limit, minimum_forcing_depth)
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -299,6 +299,7 @@ subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, 
   type(unit_scale_type),   intent(in) :: US   !< A dimensional unit scaling type
   type(ideal_age_tracer_CS), pointer  :: CS   !< The control structure returned by a previous
                                               !! call to register_ideal_age_tracer.
+  type(thermo_var_ptrs),   intent(in) :: tv
   type(otec_CS),           intent(in) :: otec
   real,          optional, intent(in) :: evap_CFL_limit !< Limit on the fraction of the water that can
                                               !! be fluxed out of the top layer in a timestep [nondim]
