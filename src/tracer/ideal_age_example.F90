@@ -338,7 +338,7 @@ subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, 
   endif
 
   ! This applies OTEC piping to the ideal age tracer
-  if (otec%apply_otec) then
+  if (otec%use_otec .and. otec%apply_otec_tracer) then
     do m=1,CS%ntr
       do k=1,nz ;do j=js,je ; do i=is,ie
         h_work(i,j,k) = h_old(i,j,k)

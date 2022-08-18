@@ -117,7 +117,6 @@ type, public :: diabatic_CS ; private
   logical :: use_oda_incupd          !< If True, DA incremental update is
                                      !! applied everywhere
   logical :: use_geothermal          !< If true, apply geothermal heating.
-  logical :: use_otec                !< If true, apply OTEC.
   logical :: use_int_tides           !< If true, use the code that advances a separate set
                                      !! of equations for the internal tide energy density.
   logical :: ePBL_is_additive        !< If true, the diffusivity from ePBL is added to all
@@ -586,7 +585,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
   endif
 
-  if (CS%use_otec) then
+  if (CS%otec%use_otec .and. CS%otec%apply_otec_thermo) then
     call otec_diabatic(h, tv, dt, G, GV, CS%otec, halo=CS%halo_TS_diff)
   endif
 
@@ -3438,7 +3437,6 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   ! initialize the OTEC module
   call otec_init(Time, G, GV, param_file, diag, CS%otec)
-  CS%use_otec = CS%otec%apply_otec
 
   ! initialize module for internal tide induced mixing
   if (CS%use_int_tides) then

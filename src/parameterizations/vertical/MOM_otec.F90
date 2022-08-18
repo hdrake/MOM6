@@ -26,7 +26,7 @@ public otec_diabatic, otec_tracer, otec_init
 !> Control structure for OTEC
 type, public :: otec_CS ;
   logical :: initialized = .false. !< True if this control structure has been initialized.
-  logical :: apply_otec !< If true, OTEC will be applied.
+  logical :: use_otec, apply_otec_thermo, apply_otec_tracer !< If true, OTEC will be applied.
 
   ! OTEC input variables
   real    :: w_cw !< Cold-water pipe velocity [Z T-1 ~> m s-1]
@@ -81,7 +81,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
   if (.not. CS%initialized) call MOM_error(FATAL, "MOM_otec: "//&
          "Module must be initialized before it is used.")
 
-  if (.not.CS%apply_otec) return
+  if (.not.CS%apply_otec_thermo) return
 
   do j=js,je
     do i=is,ie
@@ -152,7 +152,7 @@ subroutine otec_tracer(h, T, Tr, dt, G, GV, CS, halo)
   if (.not. CS%initialized) call MOM_error(FATAL, "MOM_otec: "//&
          "Module must be initialized before it is used.")
 
-  if (.not.CS%apply_otec) return
+  if (.not.CS%apply_otec_tracer) return
 
   do j=js,je
     do i=is,ie
@@ -200,6 +200,7 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
   character(len=48)  :: thickness_units
   ! Local variables
   character(len=200) :: inputdir, otec_file, filename, otec_var
+  logical :: use_otec, apply_otec_thermo, apply_otec_tracer
   real :: w_cw  ! A uniform pumping rate [Z T-1 ~> m s-1]
   real :: gamma ! Ratio of warm- to cold-water pumping rate
   real :: depth_cold, depth_warm, depth_out ! Depths of the pipes [m]
@@ -212,6 +213,15 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
 
   ! write parameters to the model log.
   call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "USE_OTEC", use_otec, &
+                 "Whether or not to use the OTEC module", &
+                 default=.false.)
+  call get_param(param_file, mdl, "APPLY_OTEC_THERMO", apply_otec_thermo, &
+                 "Whether to apply thermodynamic tendencies due to OTEC", &
+                 default=.true.)
+  call get_param(param_file, mdl, "APPLY_OTEC_TRACER", apply_otec_tracer, &
+                 "Whether to apply passive tracer tendencies due to OTEC", &
+                 default=.true.)
   call get_param(param_file, mdl, "OTEC_W_CW", w_cw, &
                  "The constant OTEC cold-water pumping rate or 0 to "//&
                  "disable OTEC.", &
@@ -236,7 +246,9 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
   CS%depth_warm = depth_warm
   CS%depth_out  = depth_out
 
-  CS%apply_otec = .not.(w_cw == 0.0)
+  CS%use_otec = use_otec
+  CS%apply_otec_thermo = apply_otec_thermo
+  CS%apply_otec_tracer = apply_otec_tracer
 
 end subroutine otec_init
 

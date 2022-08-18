@@ -542,7 +542,7 @@ contains
     endif
 
     ! This applies OTEC piping to generic tracers
-    if (otec%apply_otec) then
+    if (otec%use_otec .and. otec%apply_otec_tracer) then
       g_tracer=>CS%g_tracer_list
       do
         if (g_tracer_is_prog(g_tracer)) then
