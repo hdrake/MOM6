@@ -48,7 +48,7 @@ subroutine find_layer(h1d, GV, target_depth, k, layer_depth)
 
   do while (layer_depth <= target_depth)
     k = k + 1
-    if (k > GV%ke) return ! ocean is not deep enough
+    if (k > GV%ke) return ! ocean is not thick (or deep) enough
     layer_depth = layer_depth + h1d(k)
   enddo
 end subroutine find_layer

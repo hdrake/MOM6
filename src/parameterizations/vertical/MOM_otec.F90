@@ -28,15 +28,17 @@ type, public :: otec_CS ;
   logical :: initialized = .false. !< True if this control structure has been initialized.
   logical :: use_otec, apply_otec_thermo, apply_otec_tracer !< If true, OTEC will be applied.
 
+  type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock
+  type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to regulate the timing
+
   ! OTEC input variables
   real    :: w_cw !< Cold-water pipe velocity [Z T-1 ~> m s-1]
   real    :: w_ww !< Warm-water pipe velocity [Z T-1 ~> m s-1]
 
   real    :: depth_cold, depth_warm, depth_out !< Pipe depths [m]
   
-
-  type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock
-  type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to regulate the timing
+  integer :: id_otec_intake_dT = -1
+  integer :: id_Qcw = -1
 
 end type otec_CS
 
@@ -54,19 +56,23 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
                                                            !! a previous call to
                                                            !! otec_init.
   integer,                         optional, intent(in)    :: halo !< Halo width over which to work
+
   ! Local variables
+  real, dimension(SZI_(G),SZJ_(G)) :: &
+    intake_dT, &
+    Qcw
 
   integer :: i, j, k, is, ie, js, je, nz, k2, k_warm, k_cold
   real :: dh_cold, dh_warm, & ! w_cw and w_ww applied over the timestep
           dMass, dSalt, dHeat, & ! Tracers being mixed and moved
-          layer_depth, depth_tot, deltaT ! For comparing stratification against threshold
+          warm_layer_depth, cold_layer_depth, depth_tot ! For comparing stratification against threshold
   real, dimension(SZK_(GV)), target :: h1d, T1d, S1d
   type(var1d_type) :: v1d !< 1-dimensional copy of state variables
 
   k_warm = 0
   k_cold = 0
-  deltaT = 0.0
-  layer_depth = 0.0
+  warm_layer_depth = 0.0
+  cold_layer_depth = 0.0
   depth_tot = 0.0
 
   v1d%h => h1d
@@ -83,6 +89,9 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
 
   if (.not.CS%apply_otec_thermo) return
 
+  intake_dT(:,:) = 0.0
+  Qcw(:,:) = 0.0
+
   do j=js,je
     do i=is,ie
 
@@ -94,26 +103,39 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
       enddo
 
       ! Only continue if temperature difference is larger than 20ºC (net power production)
-      call find_layer(v1d%h, GV, CS%depth_warm, k_warm, layer_depth)
-      call find_layer(v1d%h, GV, CS%depth_cold, k_cold, layer_depth)
-      deltaT = T1d(k_warm) - T1d(k_cold)
+      call find_layer(v1d%h, GV, CS%depth_warm, k_warm, warm_layer_depth)
+      call find_layer(v1d%h, GV, CS%depth_cold, k_cold, cold_layer_depth)
+      
+      if ( (warm_layer_depth >= CS%depth_warm) .and. (cold_layer_depth >= CS%depth_cold) ) then
+      
+        intake_dT(i,j) = T1d(k_warm) - T1d(k_cold)
 
-      if (deltaT > 20.0) then
+        if ( (intake_dT(i,j)   >  16.0) ) then
 
-        call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
-        call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
+          call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
+          call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
 
-        ! Copy the 1D working arrays back into the original 3D arrays
-        do k=1,GV%ke
-          h(i,j,k) = h1d(k)
-          tv%T(i,j,k) = T1d(k)
-          tv%S(i,j,k) = S1d(k)
-        enddo
+          ! Copy the 1D working arrays back into the original 3D arrays
+          do k=1,GV%ke
+            h(i,j,k) = h1d(k)
+            tv%T(i,j,k) = T1d(k)
+            tv%S(i,j,k) = S1d(k)
+          enddo
 
+          Qcw(i,j) = CS%w_cw * G%areaT(i,j)
+
+        endif
       endif
 
     enddo ! i-loop
   enddo ! j-loop
+
+  if (CS%id_otec_intake_dT > 0) then
+    call post_data(CS%id_otec_intake_dT, intake_dT, CS%diag)
+  endif
+  if (CS%id_Qcw > 0) then
+    call post_data(CS%id_Qcw, Qcw, CS%diag)
+  endif
 
 end subroutine otec_diabatic
 
@@ -249,6 +271,15 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
   CS%use_otec = use_otec
   CS%apply_otec_thermo = apply_otec_thermo
   CS%apply_otec_tracer = apply_otec_tracer
+
+  ! Post 2D otec diagnostics
+  CS%id_otec_intake_dT=register_diag_field('ocean_model', &
+    'otec_intake_dT', diag%axesT1, Time,             &
+    'Temperature difference between shallow and deep intake pipes', &
+    'degC')
+  CS%id_Qcw=register_diag_field('ocean_model', &
+    'Qcw', diag%axesT1, Time,                  &
+    'Cold water pipe transport')
 
 end subroutine otec_init
 
