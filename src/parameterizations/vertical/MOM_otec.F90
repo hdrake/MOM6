@@ -32,8 +32,8 @@ type, public :: otec_CS ;
   type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to regulate the timing
 
   ! OTEC input variables
-  real    :: w_cw !< Cold-water pipe velocity [Z T-1 ~> m s-1]
-  real    :: w_ww !< Warm-water pipe velocity [Z T-1 ~> m s-1]
+  real    :: gamma !< Ratio of warm to cold water pumping rates [1]
+  real, allocatable, dimension(:,:) :: w_cw !< Prescribed OTEC pumping rates
 
   real    :: depth_cold, depth_warm, depth_out !< Pipe depths [m]
   
@@ -63,7 +63,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
     Qcw
 
   integer :: i, j, k, is, ie, js, je, nz, k2, k_warm, k_cold
-  real :: dh_cold, dh_warm, & ! w_cw and w_ww applied over the timestep
+  real :: dh_cold, dh_warm, w_ww, & ! w_cw and w_ww=gamma*w_cw applied over the timestep
           dMass, dSalt, dHeat, & ! Tracers being mixed and moved
           warm_layer_depth, cold_layer_depth, depth_tot ! For comparing stratification against threshold
   real, dimension(SZK_(GV)), target :: h1d, T1d, S1d
@@ -91,6 +91,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
 
   intake_dT(:,:) = 0.0
   Qcw(:,:) = 0.0
+  w_ww = 0.0
 
   do j=js,je
     do i=is,ie
@@ -102,7 +103,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
         v1d%Tr(k) = tv%S(i,j,k)
       enddo
 
-      ! Only continue if temperature difference is larger than 20ºC (net power production)
+      ! Only continue if temperature difference is larger than 16ºC (approximately positive net power)
       call find_layer(v1d%h, GV, CS%depth_warm, k_warm, warm_layer_depth)
       call find_layer(v1d%h, GV, CS%depth_cold, k_cold, cold_layer_depth)
       
@@ -110,10 +111,11 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
       
         intake_dT(i,j) = T1d(k_warm) - T1d(k_cold)
 
-        if ( (intake_dT(i,j)   >  16.0) ) then
+        if ( (intake_dT(i,j)   >  16.0) .and. (CS%w_cw(i,j) > 0.0) ) then
 
-          call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
-          call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
+          call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw(i,j), dt, G, GV, v1d)
+          w_ww = CS%w_cw(i,j) * CS%gamma
+          call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, w_ww, dt, G, GV, v1d)
 
           ! Copy the 1D working arrays back into the original 3D arrays
           do k=1,GV%ke
@@ -122,7 +124,7 @@ subroutine otec_diabatic(h, tv, dt, G, GV, CS, halo)
             tv%S(i,j,k) = S1d(k)
           enddo
 
-          Qcw(i,j) = CS%w_cw * G%areaT(i,j)
+          Qcw(i,j) = CS%w_cw(i,j) * G%areaT(i,j)
 
         endif
       endif
@@ -151,15 +153,18 @@ subroutine otec_tracer(h, T, Tr, dt, G, GV, CS, halo)
 
   ! Local variables
   integer :: i, j, k, is, ie, js, je, nz, k2, k_warm, k_cold
-  real :: layer_depth, depth_tot, deltaT ! For comparing stratification against threshold
+  real :: cold_layer_depth, warm_layer_depth, depth_tot, intake_dT, w_ww
   real, dimension(SZK_(GV)), target :: h1d, T1d, Tr1d
   type(var1d_type) :: v1d !< 1-dimensional copy of state variables
 
   k_warm = 0
   k_cold = 0
-  deltaT = 0.0
-  layer_depth = 0.0
+  warm_layer_depth = 0.0
+  cold_layer_depth = 0.0
   depth_tot = 0.0
+
+  intake_dT = 0.0
+  w_ww = 0.0
 
   v1d%h => h1d
   v1d%T => T1d
@@ -186,22 +191,28 @@ subroutine otec_tracer(h, T, Tr, dt, G, GV, CS, halo)
         v1d%Tr(k) = Tr(i,j,k)
       enddo
 
-      ! Only continue if temperature difference is larger than 20ºC (net power production)
-      call find_layer(v1d%h, GV, CS%depth_warm, k_warm, layer_depth)
-      call find_layer(v1d%h, GV, CS%depth_cold, k_cold, layer_depth)
-      deltaT = T1d(k_warm) - T1d(k_cold)
+      ! Only continue if temperature difference is larger than 16ºC (approx positive net power)
+      call find_layer(v1d%h, GV, CS%depth_warm, k_warm, warm_layer_depth)
+      call find_layer(v1d%h, GV, CS%depth_cold, k_cold, cold_layer_depth)
+      
+      if ( (warm_layer_depth >= CS%depth_warm) .and. (cold_layer_depth >= CS%depth_cold) ) then
+      
+        intake_dT = T1d(k_warm) - T1d(k_cold)
 
-      if (deltaT > 20.0) then
+        if ( (intake_dT > 16.0) .and. (CS%w_cw(i,j) > 0.0) ) then
 
-        call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw, dt, G, GV, v1d)
-        call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, CS%w_ww, dt, G, GV, v1d)
+          call pipe_mass_and_tracer(i, j, CS%depth_cold, CS%depth_out, CS%w_cw(i,j), dt, G, GV, v1d)
+          w_ww = CS%w_cw(i,j) * CS%gamma
+          call pipe_mass_and_tracer(i, j, CS%depth_warm, CS%depth_out, w_ww, dt, G, GV, v1d)
 
-        ! Copy the 1D working arrays back into the original 3D arrays
-        do k=1,GV%ke
-          Tr(i,j,k) = v1d%Tr(k)
-        enddo
+          ! Copy the 1D working arrays back into the original 3D arrays
+          do k=1,GV%ke
+            Tr(i,j,k) = v1d%Tr(k)
+          enddo
 
+        endif
       endif
+
     enddo ! i-loop
   enddo ! j-loop
 end subroutine otec_tracer
@@ -244,8 +255,9 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
   call get_param(param_file, mdl, "APPLY_OTEC_TRACER", apply_otec_tracer, &
                  "Whether to apply passive tracer tendencies due to OTEC", &
                  default=.true.)
-  call get_param(param_file, mdl, "OTEC_W_CW", w_cw, &
-                 "The constant OTEC cold-water pumping rate or 0 to "//&
+  call get_param(param_file, mdl, "OTEC_WCW", w_cw, &
+                 "The constant OTEC cold-water pumping rate, a rescaling "//&
+                 "factor for the pumping rates read from OTEC_FILE, or 0.0 to "//&
                  "disable OTEC.", &
                  units="m s-1", default=0.0)
   call get_param(param_file, mdl, "OTEC_GAMMA", gamma, &
@@ -259,10 +271,41 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
                   units="m", default=20.0)
   call get_param(param_file, mdl, "OTEC_OUT_DEPTH", depth_out, &
                   "The depth of the mixed-water output for OTEC.", &
-                  units="m", default=500.0)
+                  units="m", default=300.0)
 
-  CS%w_cw = w_cw
-  CS%w_ww = gamma*w_cw
+  call safe_alloc_alloc(CS%w_cw, isd, ied, jsd, jed) ; CS%w_cw(:,:) = 0.0
+  call get_param(param_file, mdl, "OTEC_FILE", otec_file, &
+                 "The file from which the static OTEC pumping rates"//&
+                 "are to be read, or blank for a uniform pumping ratet.", default=" ")
+
+  if (len_trim(otec_file) >= 1) then
+    call get_param(param_file, mdl, "INPUTDIR", inputdir, default=".")
+    inputdir = slasher(inputdir)
+    filename = trim(inputdir)//trim(otec_file)
+    call log_param(param_file, mdl, "INPUTDIR/OTEC_FILE", filename)
+    call get_param(param_file, mdl, "OTEC_VARNAME", otec_var, &
+                 "The name of the cold water OTEC pumping rate in OTEC_FILE.", &
+                 default="w_cw")
+    call MOM_read_data(filename, trim(otec_var), CS%w_cw, G%Domain)
+    do j=jsd,jed ; do i=isd,ied
+      CS%w_cw(i,j) = G%mask2dT(i,j) * CS%w_cw(i,j)
+    enddo ; enddo
+  else
+    do j=jsd,jed ; do i=isd,ied
+      CS%w_cw(i,j) = G%mask2dT(i,j) * w_cw
+    enddo ; enddo
+  endif
+  call pass_var(CS%w_cw, G%domain)
+
+  ! post the static OTEC pumping rates
+  id = register_static_field('ocean_model', 'w_cw', diag%axesT1,   &
+        'OTEC cold water pumping rate', 'm2 s-1', &
+        cmor_field_name='w_cw', &
+        cmor_long_name='OTEC cold water pumping rate', &
+        x_cell_method='mean', y_cell_method='mean', area_cell_method='mean')
+  if (id > 0) call post_data(id, CS%w_cw, diag, .true.)
+
+  CS%gamma = gamma
 
   CS%depth_cold = depth_cold
   CS%depth_warm = depth_warm
@@ -282,5 +325,11 @@ subroutine otec_init(Time, G, GV, param_file, diag, CS)
     'Cold water pipe transport')
 
 end subroutine otec_init
+
+!> Clean up and deallocate memory associated with the geothermal heating module.
+subroutine otec_end(CS)
+  type(otec_CS), intent(inout) :: CS !< OTEC control struct
+  if (allocated(CS%w_cw)) deallocate(CS%w_cw)
+end subroutine otec_end
 
 end module MOM_otec
