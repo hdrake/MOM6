@@ -510,8 +510,7 @@ subroutine idealized_hurricane_wind_profile(CS, US, absf, YY, XX, UOCN, VOCN, Tx
 
   ! Implementing Holland (1980) parametric wind profile
 
-  radius = SQRT(XX**2 + YY**2)
-  rad_rad_max = radius / CS%rad_max_wind
+  radius = SQRT((XX**2) + (YY**2))
 
   ! rkm - r converted to km for Holland prof.
   !       used in km due to error, correct implementation should
@@ -648,12 +647,23 @@ subroutine idealized_hurricane_wind_profile(CS, US, absf, YY, XX, UOCN, VOCN, Tx
   dV = U10*cos(Adir-Alph) - Vocn + V_TS
 
   !  Use a simple drag coefficient as a function of U10 (from Sullivan et al., 2010)
-  du10 = sqrt(du**2+dv**2)
-  Cd = simple_wind_scaled_Cd(u10, du10, CS)
+  du10 = sqrt((du**2) + (dv**2))
+  if (dU10 < 11.0*US%m_s_to_L_T) then
+    Cd = 1.2e-3
+  elseif (dU10 < 20.0*US%m_s_to_L_T) then
+    if (CS%answer_date < 20190101) then
+      Cd = (0.49 + 0.065*US%L_T_to_m_s*U10)*1.e-3
+    else
+      Cd = (0.49 + 0.065*US%L_T_to_m_s*dU10)*1.e-3
+    endif
+  else
+    Cd = 1.8e-3
+  endif
 
   ! Compute stress vector
-  TX = US%L_to_Z * CS%rho_a * Cd * du10 * dU
-  TY = US%L_to_Z * CS%rho_a * Cd * du10 * dV
+  TX = US%L_to_Z * CS%rho_a * Cd * sqrt((dU**2) + (dV**2)) * dU
+  TY = US%L_to_Z * CS%rho_a * Cd * sqrt((dU**2) + (dV**2)) * dV
+
 end subroutine idealized_hurricane_wind_profile
 
 !> This subroutine is primarily needed as a legacy for reproducing answers.
@@ -728,17 +738,11 @@ subroutine SCM_idealized_hurricane_wind_forcing(sfc_state, forces, day, G, US, C
   else
     A = (US%L_to_m*CS%rad_max_wind)**B
   endif
-  ! f_local = f(x,y), but in the SCM it is constant
-  if (CS%BR_Bench) then ! (CS%SCM_mode) then
-    f_local = CS%f_column
-  else
-    f_local = G%CoriolisBu(is,js)
-  endif
-
-  ! Calculate x position relative to hurricane center as a function of time.
-  xx = (t0 - time_type_to_real(day)*US%s_to_T) * CS%hurr_translation_spd * cos(transdir)
-  rad = sqrt(xx**2 + CS%dy_from_center**2)
-
+  !/ BR
+  ! Calculate x position as a function of time.
+  xx = US%s_to_T*( t0 - time_type_to_real(day)) * CS%hurr_translation_spd * cos(transdir)
+  rad = sqrt((xx**2) + (CS%dy_from_center**2))
+  !/ BR
   ! rkm - rad converted to km for Holland prof.
   !       used in km due to error, correct implementation should
   !       not need rkm, but to match winds w/ experiment this must
@@ -811,9 +815,18 @@ subroutine SCM_idealized_hurricane_wind_forcing(sfc_state, forces, day, G, US, C
     !/----------------------------------------------------|
     !  Add a simple drag coefficient as a function of U10 |
     !/----------------------------------------------------|
-    du10 = sqrt(du**2+dv**2)
-    Cd = simple_wind_scaled_Cd(u10, du10, CS)
-
+    du10 = sqrt((du**2) + (dv**2))
+    if (dU10 < 11.0*US%m_s_to_L_T) then
+      Cd = 1.2e-3
+    elseif (dU10 < 20.0*US%m_s_to_L_T) then
+      if (CS%answer_date < 20190101) then
+        Cd = (0.49 + 0.065 * US%L_T_to_m_s*U10 )*0.001
+      else
+        Cd = (0.49 + 0.065 * US%L_T_to_m_s*dU10 )*0.001
+      endif
+    else
+      Cd = 0.0018
+    endif
     forces%taux(I,j) = CS%rho_a * US%L_to_Z * G%mask2dCu(I,j) * Cd*du10*dU
   enddo ; enddo
 
@@ -824,8 +837,18 @@ subroutine SCM_idealized_hurricane_wind_forcing(sfc_state, forces, day, G, US, C
     Vocn = 0. ! sfc_state%v(i,J)
     dU = U10*sin(Adir - CS%pi - Alph) - Uocn + U_TS
     dV = U10*cos(Adir-Alph) - Vocn + V_TS
-    du10 = sqrt(du**2+dv**2)
-    Cd = simple_wind_scaled_Cd(u10, du10, CS)
+    du10 = sqrt((du**2) + (dv**2))
+    if (dU10 < 11.0*US%m_s_to_L_T) then
+      Cd = 1.2e-3
+    elseif (dU10 < 20.0*US%m_s_to_L_T) then
+      if (CS%answer_date < 20190101) then
+        Cd = (0.49 + 0.065 * US%L_T_to_m_s*U10 )*0.001
+      else
+        Cd = (0.49 + 0.065 * US%L_T_to_m_s*dU10 )*0.001
+      endif
+    else
+      Cd = 0.0018
+    endif
     forces%tauy(I,j) = CS%rho_a * US%L_to_Z * G%mask2dCv(I,j) * Cd*dU10*dV
   enddo ; enddo
 
