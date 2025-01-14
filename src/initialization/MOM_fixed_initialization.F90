@@ -146,6 +146,7 @@ subroutine MOM_initialize_fixed(G, US, OBC, PF, write_geom, output_dir)
   endif
 
   ! Read sub-grid scale topography parameters at velocity points used for porous barrier calculation
+  ! TODO: The following routine call may eventually be merged as one of the CHANNEL_CONFIG options
   call get_param(PF, mdl, "SUBGRID_TOPO_AT_VEL", read_porous_file, &
                  "If true, use variables from TOPO_AT_VEL_FILE as parameters for porous barrier.", &
                  default=.False.)
@@ -163,10 +164,10 @@ subroutine MOM_initialize_fixed(G, US, OBC, PF, write_geom, output_dir)
   enddo ; enddo
 
   if (debug) then
-    call qchksum(G%CoriolisBu, "MOM_initialize_fixed: f ", G%HI, scale=US%s_to_T)
-    call qchksum(G%Coriolis2Bu, "MOM_initialize_fixed: f2 ", G%HI, scale=US%s_to_T**2)
-    call hchksum(G%dF_dx, "MOM_initialize_fixed: dF_dx ", G%HI, scale=US%m_to_L*US%s_to_T)
-    call hchksum(G%dF_dy, "MOM_initialize_fixed: dF_dy ", G%HI, scale=US%m_to_L*US%s_to_T)
+    call qchksum(G%CoriolisBu, "MOM_initialize_fixed: f ", G%HI, unscale=US%s_to_T)
+    call qchksum(G%Coriolis2Bu, "MOM_initialize_fixed: f2 ", G%HI, unscale=US%s_to_T**2)
+    call hchksum(G%dF_dx, "MOM_initialize_fixed: dF_dx ", G%HI, unscale=US%m_to_L*US%s_to_T)
+    call hchksum(G%dF_dy, "MOM_initialize_fixed: dF_dy ", G%HI, unscale=US%m_to_L*US%s_to_T)
   endif
 
   call initialize_grid_rotation_angle(G, PF)
