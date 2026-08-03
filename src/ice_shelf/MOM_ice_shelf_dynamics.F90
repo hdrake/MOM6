@@ -5241,9 +5241,10 @@ subroutine bilinear_shape_fn_grid_1qp(G, i, j, Phi)
 end subroutine bilinear_shape_fn_grid_1qp
 
 subroutine bilinear_shape_functions_subgrid(Phisub, nsub)
-  integer, intent(in)    :: nsub
+  integer, intent(in)    :: nsub   !< The number of subgridscale quadrature locations in each direction
   real, dimension(2,2,nsub,nsub,2,2), &
-           intent(inout) :: Phisub
+           intent(inout) :: Phisub !< Quadrature structure weights at subgridscale
+                                   !! locations for finite element calculations [nondim]
 
   integer :: i, j, qx, qy
   real,dimension(2)    :: xquad
