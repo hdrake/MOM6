@@ -136,6 +136,17 @@ type, public :: surface_forcing_CS ; private
   logical :: adjust_net_FW_exclude_frunoff  !< If true, exclude frozen runoff (iceberg calving) from
                                             !! the net-fresh-water sum that is driven to zero, so that
                                             !! frozen runoff acts as a genuine water/sea-level source.
+  logical :: use_seaice_melt_in_net_FW      !< If true, use the sea-ice model's own melt/formation
+                                            !! mass flux in the net-fresh-water sum, instead of
+                                            !! reconstructing it from the brine salt flux divided by
+                                            !! ICE_SALT_CONCENTRATION.  Requires that the sea-ice
+                                            !! model supply IOB%seaice_melt.
+  logical :: adjust_net_FW_exclude_seaice_melt !< If true, exclude the sea-ice melt/formation flux
+                                            !! from the net-fresh-water sum that is driven to zero,
+                                            !! so that the ocean's mass mirrors the sea-ice reservoir
+                                            !! and it is the ocean + sea ice system whose water is
+                                            !! conserved.  Only meaningful with
+                                            !! USE_SEAICE_MELT_IN_NET_FW.
   logical :: mask_srestore_under_ice        !< If true, use an ice mask defined by frazil criteria
                                             !! for salinity restoring.
   real    :: ice_salt_concentration         !< Salt concentration for sea ice [kg/kg]
@@ -204,6 +215,11 @@ type, public :: ice_ocean_boundary_type
   real, pointer, dimension(:,:) :: sw_flux_nir_dif =>NULL() !< diffuse Near InfraRed sw radiation [W m-2]
   real, pointer, dimension(:,:) :: lprec           =>NULL() !< mass flux of liquid precip [kg m-2 s-1]
   real, pointer, dimension(:,:) :: fprec           =>NULL() !< mass flux of frozen precip [kg m-2 s-1]
+  real, pointer, dimension(:,:) :: seaice_melt     =>NULL() !< mass flux of sea-ice and snow melt
+                                                            !! (positive) or formation (negative)
+                                                            !! [kg m-2 s-1].  Associated only when the
+                                                            !! sea-ice model keeps this flux out of
+                                                            !! lprec; see USE_SEAICE_MELT_IN_NET_FW.
   real, pointer, dimension(:,:) :: runoff          =>NULL() !< mass flux of liquid runoff [kg m-2 s-1]
   real, pointer, dimension(:,:) :: runoff_carbon   =>NULL() !< mass flux of carbon in liquid runoff [kg m-2 s-1]
   real, pointer, dimension(:,:) :: calving         =>NULL() !< mass flux of frozen runoff [kg m-2 s-1]
@@ -505,6 +521,17 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
         call check_mask_val_consistency(IOB%fprec(i-i0,j-j0), G%mask2dT(i,j), i, j, 'fprec', G)
     endif
 
+    ! Water flux from the melt (positive) or formation (negative) of sea ice and snow.  This mirrors
+    ! the NUOPC and MCT caps, which have always received this flux separately; under the FMS cap it
+    ! used to arrive buried inside lprec, leaving fluxes%seaice_melt -- and hence the seaice_melt /
+    ! fsitherm diagnostic -- identically zero.  MOM_forcing_type already carries this term through
+    ! netMassInOut, netMassOut and net_mass_src, so populating it here is all that is required.
+    if (associated(IOB%seaice_melt)) then
+      fluxes%seaice_melt(i,j) = kg_m2_s_conversion * IOB%seaice_melt(i-i0,j-j0) * G%mask2dT(i,j)
+      if (CS%check_no_land_fluxes) &
+        call check_mask_val_consistency(IOB%seaice_melt(i-i0,j-j0), G%mask2dT(i,j), i, j, 'seaice_melt', G)
+    endif
+
     if (associated(IOB%q_flux)) then
       fluxes%evap(i,j) = - kg_m2_s_conversion * IOB%q_flux(i-i0,j-j0) * G%mask2dT(i,j)
       if (CS%check_no_land_fluxes) &
@@ -669,6 +696,15 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
 
   ! adjust the NET fresh-water flux to zero, if flagged
   if (CS%adjust_net_fresh_water_to_zero) then
+    !   Fail loudly rather than silently offsetting nothing.  IOB%seaice_melt is associated only if
+    ! the sea-ice model was told to keep that flux out of lprec, so this catches the case where
+    ! USE_SEAICE_MELT_IN_NET_FW is set in the ocean but KEEP_SEAICE_MELT_SEPARATE is not set in the
+    ! ice -- which would otherwise add an all-zero term and quietly leave the melt inside lprec.
+    if (CS%use_seaice_melt_in_net_FW) then ; if (.not.associated(IOB%seaice_melt)) then
+      call MOM_error(FATAL, "convert_IOB_to_fluxes: USE_SEAICE_MELT_IN_NET_FW is true but the "//&
+                     "sea-ice model is not supplying IOB%seaice_melt.  Set SIS2's "//&
+                     "KEEP_SEAICE_MELT_SEPARATE = True, or turn USE_SEAICE_MELT_IN_NET_FW off.")
+    endif ; endif
     sign_for_net_FW_bug = 1.
     if (CS%use_net_FW_adjustment_sign_bug) sign_for_net_FW_bug = -1.
     do j=js,je ; do i=is,ie
@@ -681,15 +717,29 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
       net_FW(i,j) =  (((fluxes%lprec(i,j)   + fluxes%fprec(i,j)) + &
                        (fluxes%lrunoff(i,j) + frunoff_netFW)) + &
                        (fluxes%evap(i,j)    + fluxes%vprec(i,j)) ) * G%areaT(i,j)
-      !   The following contribution appears to be calculating the volume flux of sea-ice
-      ! melt. This calculation is clearly WRONG if either sea-ice has variable
-      ! salinity or the sea-ice is completely fresh.
-      !   Bob thinks this is trying ensure the net fresh-water of the ocean + sea-ice system
-      ! is constant.
-      !   To do this correctly we will need a sea-ice melt field added to IOB. -AJA
-      if (associated(IOB%salt_flux) .and. (CS%ice_salt_concentration>0.0)) &
-        net_FW(i,j) = net_FW(i,j) + sign_for_net_FW_bug * G%areaT(i,j) * &
-                     (kg_m2_s_conversion*IOB%salt_flux(i-i0,j-j0) / CS%ice_salt_concentration)
+      if (CS%use_seaice_melt_in_net_FW) then
+        !   AJA's fix, now that the sea-ice model does supply the melt field: use the actual
+        ! ice-ocean mass exchange.  It is exact for any ice salinity, including fresh ice, and it
+        ! includes the snow that rides on the ice -- which carries no salt and so was invisible to
+        ! the brine-based reconstruction below.
+        !   Whether it belongs in the sum at all is a physical choice, not a technical one:
+        ! including it (the NUOPC/MCT convention) drives the OCEAN's net mass flux to zero, holding
+        ! ocean mass flat; excluding it conserves the water of the OCEAN + SEA ICE system instead
+        ! and lets ocean mass breathe with the ice reservoir, as it does in nature.  Excluding is
+        ! the exact form of what the brine reconstruction was groping towards.
+        if (.not.CS%adjust_net_FW_exclude_seaice_melt) &
+          net_FW(i,j) = net_FW(i,j) + G%areaT(i,j) * fluxes%seaice_melt(i,j)
+      else
+        !   The following contribution appears to be calculating the volume flux of sea-ice
+        ! melt. This calculation is clearly WRONG if either sea-ice has variable
+        ! salinity or the sea-ice is completely fresh.
+        !   Bob thinks this is trying ensure the net fresh-water of the ocean + sea-ice system
+        ! is constant.
+        !   To do this correctly we will need a sea-ice melt field added to IOB. -AJA
+        if (associated(IOB%salt_flux) .and. (CS%ice_salt_concentration>0.0)) &
+          net_FW(i,j) = net_FW(i,j) + sign_for_net_FW_bug * G%areaT(i,j) * &
+                       (kg_m2_s_conversion*IOB%salt_flux(i-i0,j-j0) / CS%ice_salt_concentration)
+      endif
       net_FW2(i,j) = net_FW(i,j) / G%areaT(i,j)
     enddo ; enddo
 
@@ -1503,6 +1553,24 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, wind_stagger)
                  CS%use_net_FW_adjustment_sign_bug, &
                    "If true, use the wrong sign for the adjustment to "//&
                    "the net fresh-water.", default=.false.)
+  call get_param(param_file, mdl, "USE_SEAICE_MELT_IN_NET_FW", &
+                 CS%use_seaice_melt_in_net_FW, &
+                 "If true, use the sea-ice model's own melt (positive) and formation (negative) "//&
+                 "mass flux in the net fresh-water sum that ADJUST_NET_FRESH_WATER_TO_ZERO drives "//&
+                 "to zero, instead of reconstructing that flux from the brine salt flux divided "//&
+                 "by ICE_SALT_CONCENTRATION.  The reconstruction is wrong whenever the sea ice "//&
+                 "has variable salinity or is fresh, and it is blind to snow, which carries no "//&
+                 "salt.  This requires the sea-ice model to pass the flux separately, i.e. SIS2's "//&
+                 "KEEP_SEAICE_MELT_SEPARATE.", default=.false.)
+  call get_param(param_file, mdl, "ADJUST_NET_FRESH_WATER_EXCLUDE_SEAICE_MELT", &
+                 CS%adjust_net_FW_exclude_seaice_melt, &
+                 "If true, hold the sea-ice melt/formation flux OUT of the net fresh-water sum "//&
+                 "that ADJUST_NET_FRESH_WATER_TO_ZERO drives to zero, exactly as "//&
+                 "ADJUST_NET_FRESH_WATER_EXCLUDE_FRUNOFF does for frozen runoff.  The ocean's "//&
+                 "mass then mirrors the sea-ice reservoir -- water genuinely leaves the ocean to "//&
+                 "become ice and returns when it melts -- so it is the ocean + sea ice system "//&
+                 "whose water is conserved, rather than the ocean's mass being held flat.  Only "//&
+                 "meaningful when USE_SEAICE_MELT_IN_NET_FW is true.", default=.false.)
   call get_param(param_file, mdl, "ADJUST_NET_FRESH_WATER_BY_SCALING", &
                  CS%adjust_net_fresh_water_by_scaling, &
                  "If true, adjustments to net fresh water to achieve zero net are "//&
