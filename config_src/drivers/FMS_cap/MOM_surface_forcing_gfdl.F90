@@ -133,6 +133,9 @@ type, public :: surface_forcing_CS ; private
   logical :: adjust_net_FW_open_ocean_only  !< If true, apply the net-fresh-water adjustment over
                                             !! open-water ocean only (weighted by 1-frac_shelf_h), so
                                             !! it is not deposited onto ice-shelf-covered/collapsed cells.
+  logical :: adjust_net_FW_exclude_frunoff  !< If true, exclude frozen runoff (iceberg calving) from
+                                            !! the net-fresh-water sum that is driven to zero, so that
+                                            !! frozen runoff acts as a genuine water/sea-level source.
   logical :: mask_srestore_under_ice        !< If true, use an ice mask defined by frazil criteria
                                             !! for salinity restoring.
   real    :: ice_salt_concentration         !< Salt concentration for sea ice [kg/kg]
@@ -280,6 +283,8 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
                               ! factors [Q R C-1 ~> J m-3 degC-1]
   real :: sign_for_net_FW_bug ! Should be +1. but an old bug can be recovered by using -1 [nondim]
   real :: area_open           ! open-water ocean area over which the net-FW adjustment is spread [L2 ~> m2]
+  real :: frunoff_netFW       ! frozen-runoff contribution to the net-FW sum, held at 0 when
+                              ! ADJUST_NET_FRESH_WATER_EXCLUDE_FRUNOFF is true [R Z T-1 ~> kg m-2 s-1]
 
   call cpu_clock_begin(id_clock_forcing)
 
@@ -667,8 +672,14 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
     sign_for_net_FW_bug = 1.
     if (CS%use_net_FW_adjustment_sign_bug) sign_for_net_FW_bug = -1.
     do j=js,je ; do i=is,ie
+      ! Frozen runoff (iceberg calving) is normally part of the net fresh-water that is driven
+      ! to zero.  With ADJUST_NET_FRESH_WATER_EXCLUDE_FRUNOFF it is held out of the sum, so that
+      ! -- like sub-shelf basal melt, which is added to lprec only after this adjustment -- it
+      ! becomes a genuine water (and sea-level) source rather than being offset.
+      frunoff_netFW = fluxes%frunoff(i,j)
+      if (CS%adjust_net_FW_exclude_frunoff) frunoff_netFW = 0.0
       net_FW(i,j) =  (((fluxes%lprec(i,j)   + fluxes%fprec(i,j)) + &
-                       (fluxes%lrunoff(i,j) + fluxes%frunoff(i,j))) + &
+                       (fluxes%lrunoff(i,j) + frunoff_netFW)) + &
                        (fluxes%evap(i,j)    + fluxes%vprec(i,j)) ) * G%areaT(i,j)
       !   The following contribution appears to be calculating the volume flux of sea-ice
       ! melt. This calculation is clearly WRONG if either sea-ice has variable
@@ -1502,6 +1513,13 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, wind_stagger)
                  "If true, apply the net-fresh-water adjustment over open-water ocean only "//&
                  "(weighted by 1-frac_shelf_h), so it is not deposited onto ice-shelf-covered "//&
                  "or collapsed under-shelf cells (which otherwise diverge).", default=.false.)
+  call get_param(param_file, mdl, "ADJUST_NET_FRESH_WATER_EXCLUDE_FRUNOFF", &
+                 CS%adjust_net_FW_exclude_frunoff, &
+                 "If true, exclude frozen runoff (iceberg calving) from the net fresh-water "//&
+                 "flux that ADJUST_NET_FRESH_WATER_TO_ZERO drives to zero, so that frozen "//&
+                 "runoff acts as a genuine water (and sea-level) source rather than being "//&
+                 "offset.  Sub-shelf basal melt is already excluded because it is added to "//&
+                 "lprec only after this adjustment.", default=.false.)
   call get_param(param_file, mdl, "ICE_SALT_CONCENTRATION", &
                  CS%ice_salt_concentration, &
                  "The assumed sea-ice salinity needed to reverse engineer the "//&
