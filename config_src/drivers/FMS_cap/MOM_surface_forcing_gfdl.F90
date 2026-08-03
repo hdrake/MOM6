@@ -130,6 +130,9 @@ type, public :: surface_forcing_CS ; private
   logical :: adjust_net_fresh_water_to_zero !< Adjust net surface fresh-water (with restoring) to zero
   logical :: use_net_FW_adjustment_sign_bug !< Use the wrong sign when adjusting net FW
   logical :: adjust_net_fresh_water_by_scaling !< Adjust net surface fresh-water w/o moving zero contour
+  logical :: adjust_net_FW_open_ocean_only  !< If true, apply the net-fresh-water adjustment over
+                                            !! open-water ocean only (weighted by 1-frac_shelf_h), so
+                                            !! it is not deposited onto ice-shelf-covered/collapsed cells.
   logical :: mask_srestore_under_ice        !< If true, use an ice mask defined by frazil criteria
                                             !! for salinity restoring.
   real    :: ice_salt_concentration         !< Salt concentration for sea ice [kg/kg]
@@ -261,7 +264,8 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
     net_FW,        & ! The area integrated net freshwater flux into the ocean [R Z L2 T-1 ~> kg s-1]
     net_FW2,       & ! The area averaged net freshwater flux into the ocean [R Z T-1 ~> kg m-2 s-1]
     work_sum,      & ! A 2-d array that is used as the work space for global sums [L2 ~> m2] or [R Z L2 T-1 ~> kg s-1]
-    open_ocn_mask    ! a binary field indicating where ice is present based on frazil criteria [nondim]
+    open_ocn_mask, & ! a binary field indicating where ice is present based on frazil criteria [nondim]
+    open_wt          ! open-water weight (mask2dT*(1-frac_shelf_h)) for the net-FW adjustment [nondim]
 
   integer :: i, j, is, ie, js, je, Isq, Ieq, Jsq, Jeq, i0, j0
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, isr, ier, jsr, jer
@@ -275,6 +279,7 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
   real :: rhoXcp              ! Reference density times heat capacity times unit scaling
                               ! factors [Q R C-1 ~> J m-3 degC-1]
   real :: sign_for_net_FW_bug ! Should be +1. but an old bug can be recovered by using -1 [nondim]
+  real :: area_open           ! open-water ocean area over which the net-FW adjustment is spread [L2 ~> m2]
 
   call cpu_clock_begin(id_clock_forcing)
 
@@ -677,17 +682,30 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
       net_FW2(i,j) = net_FW(i,j) / G%areaT(i,j)
     enddo ; enddo
 
+    ! Open-water weight: exclude ice-shelf-covered cells from the net-FW adjustment so it is not
+    ! deposited onto collapsed under-shelf columns (where h -> 0 makes T=content/h diverge).
+    ! When the option is off or no ice shelf is present, open_wt == mask2dT, i.e. the adjustment
+    ! (denominator area_open and the per-cell application below) is bit-identical to the original.
+    do j=js,je ; do i=is,ie
+      open_wt(i,j) = G%mask2dT(i,j)
+      if (CS%adjust_net_FW_open_ocean_only .and. associated(fluxes%frac_shelf_h)) &
+        open_wt(i,j) = G%mask2dT(i,j) * (1.0 - fluxes%frac_shelf_h(i,j))
+    enddo ; enddo
+
     if (CS%adjust_net_fresh_water_by_scaling) then
       call adjust_area_mean_to_zero(net_FW2, G, fluxes%netFWGlobalScl, unscale=US%RZ_T_to_kg_m2s)
       do j=js,je ; do i=is,ie
         fluxes%vprec(i,j) = fluxes%vprec(i,j) + &
-            (net_FW2(i,j) - net_FW(i,j)/G%areaT(i,j)) * G%mask2dT(i,j)
+            (net_FW2(i,j) - net_FW(i,j)/G%areaT(i,j)) * open_wt(i,j)
       enddo ; enddo
     else
+      ! Spread the adjustment over the open-water area (== CS%area_surf when open_wt==mask2dT).
+      do j=js,je ; do i=is,ie ; work_sum(i,j) = G%areaT(i,j) * open_wt(i,j) ; enddo ; enddo
+      area_open = reproducing_sum(work_sum, isr, ier, jsr, jer, unscale=US%L_to_m**2)
       fluxes%netFWGlobalAdj = reproducing_sum(net_FW(:,:), isr, ier, jsr, jer, unscale=US%RZL2_to_kg*US%s_to_T) / &
-                               CS%area_surf
+                               area_open
       do j=js,je ; do i=is,ie
-        fluxes%vprec(i,j) = ( fluxes%vprec(i,j) - fluxes%netFWGlobalAdj ) * G%mask2dT(i,j)
+        fluxes%vprec(i,j) = fluxes%vprec(i,j) - fluxes%netFWGlobalAdj * open_wt(i,j)
       enddo ; enddo
     endif
 
@@ -1479,6 +1497,11 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, wind_stagger)
                  "If true, adjustments to net fresh water to achieve zero net are "//&
                  "made by scaling values without moving the zero contour.",&
                  default=.false.)
+  call get_param(param_file, mdl, "ADJUST_NET_FRESH_WATER_OPEN_OCEAN_ONLY", &
+                 CS%adjust_net_FW_open_ocean_only, &
+                 "If true, apply the net-fresh-water adjustment over open-water ocean only "//&
+                 "(weighted by 1-frac_shelf_h), so it is not deposited onto ice-shelf-covered "//&
+                 "or collapsed under-shelf cells (which otherwise diverge).", default=.false.)
   call get_param(param_file, mdl, "ICE_SALT_CONCENTRATION", &
                  CS%ice_salt_concentration, &
                  "The assumed sea-ice salinity needed to reverse engineer the "//&
