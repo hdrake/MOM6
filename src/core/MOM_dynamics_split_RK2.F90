@@ -904,7 +904,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   if (BT_cont_BT_thick) then
     if (CS%debug) then
-      call uvchksum("before btcalc: BT_cont%h[uv]", CS%BT_cont%h_u, CS%BT_cont%h_v, G%HI, haloshift=0, symmetric=sym, unscale=GV%H_to_MKS*US%L_to_m**2*US%s_to_T)
+      call uvchksum("before btcalc: BT_cont%h[uv]", CS%BT_cont%h_u, CS%BT_cont%h_v, G%HI, &
+                    haloshift=0, symmetric=sym, unscale=GV%H_to_MKS*US%L_to_m**2*US%s_to_T)
     endif
     call btcalc(h, G, GV, CS%barotropic_CSp, CS%BT_cont%h_u, CS%BT_cont%h_v, &
                 OBC=CS%OBC)
