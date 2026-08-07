@@ -12,6 +12,7 @@ use MOM_IS_diag_mediator, only : post_data=>post_IS_data
 use MOM_IS_diag_mediator, only : register_diag_field=>register_MOM_IS_diag_field, safe_alloc_ptr
 !use MOM_IS_diag_mediator, only : MOM_IS_diag_mediator_init, set_IS_diag_mediator_grid
 use MOM_IS_diag_mediator, only : diag_ctrl, time_type, enable_averages, disable_averaging
+use MOM_IS_diag_mediator, only : enable_averaging, query_averaging_enabled
 use MOM_domains, only : MOM_domains_init, clone_MOM_domain
 use MOM_domains, only : pass_var, pass_vector, TO_ALL, CGRID_NE, BGRID_NE, AGRID, CORNER, CENTER
 use MOM_domains, only : create_group_pass, do_group_pass, group_pass_type
@@ -296,6 +297,7 @@ type, public :: ice_shelf_dyn_CS ; private
              id_u_mask = -1, id_v_mask = -1, id_ufb_mask =-1, id_vfb_mask = -1, id_t_mask = -1, &
              id_sx_shelf = -1, id_sy_shelf = -1, id_surf_slope_mag_shelf, &
              id_duHdx = -1, id_dvHdy = -1, id_fluxdiv = -1, &
+             id_um_shelf_face = -1, id_vm_shelf_face = -1, &
              id_strainrate_xx = -1, id_strainrate_yy = -1, id_strainrate_xy = -1, &
              id_pstrainrate_1 = -1, id_pstrainrate_2, &
              id_devstress_xx = -1, id_devstress_yy = -1, id_devstress_xy = -1, &
@@ -1019,6 +1021,14 @@ subroutine initialize_ice_shelf_dyn(param_file, Time, ISS, CS, G, US, diag, new_
        'y-component of ice-sheet flux divergence', 'm yr-1', conversion=365.0*86400.0*US%Z_to_m*US%s_to_T)
     CS%id_fluxdiv = register_diag_field('ice_shelf_model','fluxdiv',CS%diag%axesT1, Time, &
        'ice-sheet flux divergence', 'm yr-1', conversion=365.0*86400.0*US%Z_to_m*US%s_to_T)
+    ! The advective ice mass fluxes through the C-grid cell faces, from which the flux divergence
+    ! above is formed.  These are mass fluxes so that they are independent of the density of ice.
+    CS%id_um_shelf_face = register_diag_field('ice_shelf_model','um_shelf_face',CS%diag%axesCu1, Time, &
+       'Advective ice mass flux through the zonal cell faces, positive to the east', 'kg s-1', &
+       conversion=US%RZL2_to_kg*US%s_to_T)
+    CS%id_vm_shelf_face = register_diag_field('ice_shelf_model','vm_shelf_face',CS%diag%axesCv1, Time, &
+       'Advective ice mass flux through the meridional cell faces, positive to the north', 'kg s-1', &
+       conversion=US%RZL2_to_kg*US%s_to_T)
     CS%id_strainrate_xx = register_diag_field('ice_shelf_model','strainrate_xx',CS%diag%axesT1, Time, &
        'x-component of ice-shelf strain-rate', 'yr-1', conversion=365.0*86400.0*US%s_to_T)
     CS%id_strainrate_yy = register_diag_field('ice_shelf_model','strainrate_yy',CS%diag%axesT1, Time, &
@@ -1498,10 +1508,30 @@ subroutine ice_shelf_advect(CS, ISS, G, time_step, Time, calve_ice_shelf_bergs)
 !
 !    The flux overflows are included here. That is because they will be used to advect 3D scalars
 !    into partial cells
+!
+!    The advection is DIRECTIONALLY SPLIT, and with ALTERNATE_FIRST_DIRECTION_IS the order of the
+!    two sub-steps alternates from one call to the next.  The flux in the second direction is
+!    therefore computed from the thickness left by the first sub-step, not from ISS%h_shelf, so
+!    uh_ice and vh_ice are the two sequential sub-step fluxes rather than fluxes of a common
+!    thickness field.  That pair is what the model actually transports, and it is exactly what
+!    closes the thickness update.
+!
+!    SIGN AND STAGGERING of the posted um_shelf_face and vm_shelf_face diagnostics: uh_ice(I,j) is
+!    the flux through the face at i+1/2 and is positive to the east, so the convergence into cell
+!    (i,j) is (uh_ice(I-1,j) - uh_ice(I,j)) * G%IareaT(i,j), and similarly in the meridional
+!    direction.  A reader can therefore reconstruct the flux divergence from the posted fields.
 
   real, dimension(SZDI_(G),SZDJ_(G))   :: h_after_flux1, h_after_flux2 ! Ice thicknesses [Z ~> m].
   real, dimension(SZDIB_(G),SZDJ_(G))  :: uh_ice  ! The accumulated zonal ice volume flux [Z L2 ~> m3]
   real, dimension(SZDI_(G),SZDJB_(G))  :: vh_ice  ! The accumulated meridional ice volume flux [Z L2 ~> m3]
+  real, dimension(SZDIB_(G),SZDJ_(G))  :: um_face ! The zonal ice mass flux [R Z L2 T-1 ~> kg s-1]
+  real, dimension(SZDI_(G),SZDJB_(G))  :: vm_face ! The meridional ice mass flux [R Z L2 T-1 ~> kg s-1]
+  real    :: I_time_step   ! The inverse of the time step [T-1 ~> s-1]
+  real    :: time_int_prev ! The averaging interval in use before the ice mass fluxes
+                           ! are posted, to be restored afterward [s]
+  logical :: ave_prev      ! True if diagnostic averaging was already enabled by the caller
+  type(time_type) :: time_end_prev ! The end of the averaging interval in use before the
+                           ! ice mass fluxes are posted, to be restored afterward
   type(loop_bounds_type) :: LB
   integer                           :: isd, ied, jsd, jed, i, j, isc, iec, jsc, jec, stencil
 
@@ -1548,6 +1578,35 @@ subroutine ice_shelf_advect(CS, ISS, G, time_step, Time, calve_ice_shelf_bergs)
   enddo
 
   if (CS%calc_flux_inout) call calculate_flux_inout(CS, ISS, G, uh_ice, vh_ice)
+
+  ! Post the advective ice mass fluxes through the cell faces.  This is done here, before
+  ! shelf_advance_front below can alter uh_ice and vh_ice at the calving front, so that the
+  ! posted fluxes are exactly those whose convergence advanced the ice thickness above.
+  ! Averaging is enabled around these posts because nothing else has enabled it at this point
+  ! in the ice shelf time step, and the accumulation weight has to be this step's time_step
+  ! for the time average to be correct when several advective steps occur between outputs.
+  if ((CS%id_um_shelf_face > 0) .or. (CS%id_vm_shelf_face > 0)) then
+    ave_prev = query_averaging_enabled(CS%diag, time_int=time_int_prev, time_end=time_end_prev)
+    call enable_averages(time_step, Time, CS%diag)
+    I_time_step = 1.0 / time_step
+    if (CS%id_um_shelf_face > 0) then
+      do j=jsd,jed ; do I=G%IsdB,G%IedB
+        um_face(I,j) = (uh_ice(I,j) * CS%density_ice) * I_time_step
+      enddo ; enddo
+      call post_data(CS%id_um_shelf_face, um_face, CS%diag)
+    endif
+    if (CS%id_vm_shelf_face > 0) then
+      do J=G%JsdB,G%JedB ; do i=isd,ied
+        vm_face(i,J) = (vh_ice(i,J) * CS%density_ice) * I_time_step
+      enddo ; enddo
+      call post_data(CS%id_vm_shelf_face, vm_face, CS%diag)
+    endif
+    if (ave_prev) then
+      call enable_averaging(time_int_prev, time_end_prev, CS%diag)
+    else
+      call disable_averaging(CS%diag)
+    endif
+  endif
 
   if (CS%moving_shelf_front) then
     call shelf_advance_front(CS, ISS, G, ISS%hmask, uh_ice, vh_ice)
